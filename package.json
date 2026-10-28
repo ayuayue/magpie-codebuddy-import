@@ -1,14 +1,13 @@
 {
-  "name": "magpie-workbuddy-import",
+  "name": "magpie-codebuddy-import",
   "version": "0.1.0",
-  "description": "给 magpie 的 WorkBuddy 插件加一个 workbuddy-switch 账号 JSON 导入方式",
+  "description": "magpie 的 CodeBuddy(WorkBuddy) 供应商插件：导入 workbuddy-switch 账号 JSON、每日签到、派猫猫旅行",
   "type": "module",
   "main": "./index.mjs",
   "exports": "./index.mjs",
-  "files": [
-    "index.mjs",
-    "vendor"
-  ],
+  "files": ["index.mjs", "lib", "vendor", "scripts", "accounts.template.json", "README.md", "LICENSE"],
   "license": "MIT",
-  "private": true
+  "author": "ayuayue",
+  "keywords": ["magpie", "magpie-plugin", "codebuddy", "workbuddy"],
+  "repository": { "type": "git", "url": "git+https://github.com/ayuayue/magpie-codebuddy-import.git" }
 }
