@@ -1,0 +1,14 @@
+{
+  "name": "magpie-workbuddy-import",
+  "version": "0.1.0",
+  "description": "给 magpie 的 WorkBuddy 插件加一个 workbuddy-switch 账号 JSON 导入方式",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "vendor"
+  ],
+  "license": "MIT",
+  "private": true
+}

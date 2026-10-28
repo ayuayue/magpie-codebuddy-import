@@ -1,0 +1,6 @@
+node_modules/
+*.log
+travel-state.json
+workbuddy-import-state.json
+*.tmp
+.DS_Store

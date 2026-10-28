@@ -1,0 +1,26 @@
+[
+  {
+    "_说明": "国内版账号。必填只有 access_token（和 uid 最好也填）；variant 写 cn 或省略，domain 是 www.codebuddy.cn。这条 _说明 会被忽略，删掉也行。",
+    "uid": "填账号 uid",
+    "nickname": "显示名（会当成 magpie 里的账号名）",
+    "email": "可选，没有就删掉这行",
+    "variant": "cn",
+    "domain": "www.codebuddy.cn",
+    "access_token": "在这里填 access_token",
+    "refresh_token": "在这里填 refresh_token（不填就只能用到 access_token 过期）",
+    "token_type": "Bearer",
+    "expiresAt": 1795701600000,
+    "refreshExpiresAt": 1821754453000
+  },
+  {
+    "_说明": "国际版账号。variant 写 ai（或 global），domain 是 www.workbuddy.ai。两个档位可以放在同一个数组里，导入时自动分。",
+    "uid": "填账号 uid",
+    "nickname": "国际版账号",
+    "variant": "ai",
+    "domain": "www.workbuddy.ai",
+    "access_token": "在这里填 access_token",
+    "refresh_token": "在这里填 refresh_token",
+    "token_type": "Bearer",
+    "expiresAt": 1821754453000
+  }
+]

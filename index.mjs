@@ -1,0 +1,339 @@
+// 在社区 WorkBuddy 插件之上补一个「导入账号 JSON」登录方式：
+// 把 workbuddy-switch 导出的账号（access/refresh token）直接变成 magpie 的登录，
+// 不必每个账号都走一遍浏览器授权。整份导出粘一次就全导入。
+//
+// provider id 对外改成 codebuddy / codebuddy-ai（上游是 workbuddy / workbuddy-ai），
+// 请求转发、模型列表、token 续期、用量卡片全部沿用社区插件
+// （vendor/opencode-workbuddy-auth.mjs，@magpie-community/opencode-workbuddy-auth 0.1.41，MIT）。
+
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+
+import {
+  WorkBuddyAIAuthPlugin,
+  WorkBuddyAuthPlugin,
+  _internal,
+} from "./vendor/opencode-workbuddy-auth.mjs"
+import {
+  ID_RENAMES,
+  accountsFrom,
+  addAccounts,
+  authOf,
+  keyOf,
+  nameOf,
+  renameProviderKeys,
+  variantOf,
+} from "./lib/accounts.mjs"
+import { TRAVEL_OPTION, startTravelLoop } from "./lib/travel.mjs"
+
+// oldId → 新 id 与显示名
+const SITES = {
+  workbuddy: { id: "codebuddy", name: "CodeBuddy", variant: "cn" },
+  "workbuddy-ai": { id: "codebuddy-ai", name: "CodeBuddy AI", variant: "ai" },
+}
+
+// 已导入过的账号记在这里（按档位），免得同一份导出被重复粘贴时又添一份。
+// 删掉这个文件就可以从头再来。
+const STATE_FILE = "workbuddy-import-state.json"
+
+function statePath(directory) {
+  return join(directory || ".", STATE_FILE)
+}
+
+function readState(directory) {
+  try {
+    const kept = JSON.parse(readFileSync(statePath(directory), "utf8"))
+    return kept && typeof kept === "object" ? kept : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeState(directory, state) {
+  const path = statePath(directory)
+  mkdirSync(dirname(path), { recursive: true })
+  const temp = path + ".tmp"
+  writeFileSync(temp, JSON.stringify(state, null, 2))
+  renameSync(temp, path)
+}
+
+// WorkBuddy 的每日签到。上游插件没有 auth.checkin，magpie 内置的代签又只认
+// provider id "workbuddy"——这里自己实现，接口流程照抄 magpie 的
+// workbuddy_checkin.go：先查活动状态，未签则领，错误码 1001/1002/1003 分别是
+// 已签 / 不符合 / 结束。请求头按 workbuddy-switch 的 billing 请求配（不带
+// WorkBuddy 客户端 UA 也能调这些接口），Origin 跟随请求 host。
+function makeCheckin(vendor, client, newId, fetchImpl) {
+  const doFetch = fetchImpl ?? globalThis.fetch
+  const origin = new URL(vendor.endpoint).origin
+
+  async function call(auth, path) {
+    const res = await doFetch(vendor.endpoint + path, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + auth.access,
+        accept: "application/json",
+        "content-type": "application/json",
+        "x-user-id": auth.uid ?? "",
+        ...(auth.domain ? { "x-domain": auth.domain } : {}),
+        ...(auth.enterpriseId ? { "x-enterprise-id": auth.enterpriseId, "x-tenant-id": auth.enterpriseId } : {}),
+        "x-client-platform": "web",
+        origin,
+        referer: origin + "/profile/plans-usage",
+      },
+      body: JSON.stringify({}),
+    })
+    if (res.status === 401) {
+      const e = new Error("401 Unauthorized")
+      e.status = 401
+      throw e
+    }
+    const env = await res.json().catch(() => ({}))
+    if (env && typeof env.code === "number" && env.code !== 0 && env.code !== 200) {
+      const e = new Error(env.msg ?? env.message ?? "code " + env.code)
+      e.code = env.code
+      throw e
+    }
+    return env?.data ?? env ?? {}
+  }
+
+  return {
+    provider: newId,
+    async checkin(getAuth) {
+      const stored = await getAuth()
+      if (stored?.type !== "oauth" || !(stored.access || stored.source)) {
+        throw new Error("这个账号没有可用的登录，先登录再签到")
+      }
+      // token 快过期时先续期（续期结果由 magpie 存回）
+      const auth = await _internal.fresh(vendor, client, stored)
+      let status
+      try {
+        status = await call(auth, "/v2/billing/meter/checkin-activity-status")
+      } catch (e) {
+        if (e.status === 401) {
+          // 签到 401 但额度读得动：WorkBuddy 的签到只认它自家 App 的设备令牌
+          try {
+            await call(auth, "/billing/meter/get-user-resource-summary")
+            return {
+              outcome: "inactive",
+              message: "WorkBuddy 的签到只认它自己的 App（缺设备令牌），请在 WorkBuddy App 里签到",
+            }
+          } catch {
+            throw new Error("WorkBuddy 拒绝了这个账号的登录（401），请重新登录")
+          }
+        }
+        throw e
+      }
+      if (!status.active) return { outcome: "inactive" }
+      if (status.todayCheckedIn) {
+        return { outcome: "done", credit: status.todayCredit, streak: status.streakDays }
+      }
+      try {
+        const got = await call(auth, "/v2/billing/meter/daily-checkin")
+        return { outcome: "claimed", credit: got.credit, streak: got.streakDays, message: got.message }
+      } catch (e) {
+        if (e.code === 1001) return { outcome: "done", streak: status.streakDays }
+        if (e.code === 1002) return { outcome: "ineligible", message: e.message }
+        if (e.code === 1003) return { outcome: "inactive", message: e.message }
+        throw e
+      }
+    },
+  }
+}
+
+const IMPORT_HINT =
+  "不用浏览器：把账号 JSON 粘到下面的输入框，再点「登录」。" +
+  "（这个框在 magpie 里叫「验证码」，这里不是验证码。）"
+
+function importMethod(site, directory) {
+  return {
+    type: "oauth",
+    label: site.name + "：导入账号 JSON",
+    authorize: async () => ({
+      // 不需要打开任何页面：粘贴一段 JSON 就够了。
+      url: "",
+      method: "code",
+      instructions:
+        IMPORT_HINT +
+        "粘整份导出文件也行：属于 " + site.name + " 的会在这里导入，另一个档位的账号一并写进 magpie。" +
+        "也可以写 file:路径。",
+      async callback(code) {
+        try {
+          const parsed = accountsFrom(code)
+          const mine = parsed.filter((a) => variantOf(a) === site.variant)
+          if (!mine.length) {
+            throw new Error(
+              "这份 JSON 里没有 " + site.name + " 的账号（按 variant/domain 分档）。" +
+                (parsed.length ? "其中 " + parsed.length + " 个属于另一个档位，请到那边导入。" : ""),
+            )
+          }
+
+          const state = readState(directory)
+          const seen = new Set(Array.isArray(state[site.variant]) ? state[site.variant] : [])
+          const fresh = mine.filter((a) => {
+            const key = keyOf(a)
+            return key && !seen.has(key)
+          })
+          if (!fresh.length) {
+            throw new Error(
+              "这份 JSON 里的 " + mine.length + " 个 " + site.name + " 账号都导入过了。" +
+                "要重新导入，删掉 " + statePath(directory) + " 再试。",
+            )
+          }
+
+          // magpie 一次登录只收一个账号：选中的交给它保存，其余的直接写进账号库。
+          const chosen = fresh[0]
+          const rest = []
+          for (const account of parsed) {
+            if (account === chosen) continue
+            const key = keyOf(account)
+            if (!key) continue
+            const own = variantOf(account)
+            if ((state[own] || []).includes(key)) continue
+            try {
+              authOf(account) // 加密信封会在这里抛错，跳过它
+              rest.push(account)
+            } catch {}
+          }
+
+          const written = addAccounts(directory, rest)
+
+          const mark = (account) => {
+            const own = variantOf(account)
+            const set = new Set(Array.isArray(state[own]) ? state[own] : [])
+            const key = keyOf(account)
+            if (key) set.add(key)
+            state[own] = [...set]
+          }
+          mark(chosen)
+          for (const account of rest) mark(account)
+          writeState(directory, state)
+
+          const auth = authOf(chosen)
+          const total = 1 + written.length
+          return {
+            type: "success",
+            access: auth.access,
+            refresh: auth.refresh,
+            expires: auth.expires,
+            accountId: nameOf(chosen),
+            uid: auth.uid,
+            domain: auth.domain,
+            tokenType: auth.tokenType,
+            ...(auth.refreshExpiresAt ? { refreshExpiresAt: auth.refreshExpiresAt } : {}),
+            ...(auth.enterpriseId ? { enterpriseId: auth.enterpriseId } : {}),
+            ...(total > 1 ? { message: "这次一共导入 " + total + " 个账号。" } : {}),
+          }
+        } catch (e) {
+          return { type: "failed", error: e?.message ?? String(e) }
+        }
+      },
+    }),
+  }
+}
+
+function withImport(factory, oldId) {
+  const site = SITES[oldId]
+  const newId = site.id
+  // 上游的 site 对象（endpoint/app 等）给签到和续期用
+  const site0 = _internal.SITES[oldId]
+  return async (input, options) => {
+    // 上游内部用旧 id 认 provider：把 option 查询和 auth.set 的 path 都翻译成新 id
+    const magpie = input?.magpie
+    if (magpie && typeof magpie.option === "function") {
+      const original = magpie.option.bind(magpie)
+      magpie.option = (id, key) => original(id === oldId ? newId : id, key)
+    }
+    const client = input?.client
+    if (client?.auth && typeof client.auth.set === "function") {
+      const fix = (opts) =>
+        opts?.path?.id === oldId ? { ...opts, path: { ...opts.path, id: newId } } : opts
+      input.client = {
+        ...client,
+        auth: {
+          ...client.auth,
+          set: async (opts) => client.auth.set(fix(opts)),
+          remove: async (opts) => client.auth.remove(fix(opts)),
+        },
+      }
+    }
+
+    const hooks = await factory(input, options)
+
+    hooks.auth.provider = newId
+    if (hooks.provider && typeof hooks.provider === "object") hooks.provider.id = newId
+
+    const methods = hooks?.auth?.methods
+    if (Array.isArray(methods)) {
+      for (const method of methods) {
+        if (typeof method?.label !== "string") continue
+        // 先换 "WorkBuddy AI"，否则会变成 "CodeBuddy AI AI"
+        method.label = method.label
+          .replaceAll("WorkBuddy AI", "CodeBuddy AI")
+          .replaceAll("WorkBuddy", site.name)
+      }
+      methods.push(importMethod(site, input?.directory))
+    }
+
+    // 上游的 config 钩子把供应商登记成旧 id：搬到这里，并换显示名
+    const baseConfig = hooks?.config
+    if (typeof baseConfig === "function") {
+      hooks.config = async (config) => {
+        await baseConfig(config)
+        const p = config?.provider?.[oldId]
+        if (p) {
+          config.provider[newId] = p
+          delete config.provider[oldId]
+        }
+        const renamed = config?.provider?.[newId]
+        if (renamed) renamed.name = site.name
+      }
+    }
+
+    // chat.headers 里上游按旧 id 判 providerID，改 id 后会跳过；这里补上会话头
+    const baseHeaders = hooks?.["chat.headers"]
+    if (typeof baseHeaders === "function") {
+      hooks["chat.headers"] = async (input2, output) => {
+        await baseHeaders(input2, output)
+        const id = input2?.model?.providerID ?? input2?.provider?.info?.id
+        if (id === newId && input2?.sessionID && output?.headers) {
+          output.headers[_internal.SESSION] = String(input2.sessionID).slice(0, 128)
+        }
+      }
+    }
+
+    // 派猫猫旅行的开关：国内版才有成长中心，默认关
+    if (newId === "codebuddy") {
+      if (!Array.isArray(hooks.auth.options)) hooks.auth.options = []
+      hooks.auth.options.push({
+        key: TRAVEL_OPTION,
+        label: "自动派猫猫旅行",
+        description: "每 30 分钟派一次，猫猫回来后 15 分钟内领奖；只跑国内版账号，默认关。开关在本 agent 的编辑面板里；也可以在 magpie 配置目录放一个名为 travel-on 的空文件。",
+      })
+    }
+
+    // 上游没有签到钩子：补上，magpie 每天替每个账号签一次
+    if (!hooks.auth.checkin) {
+      const checkin = makeCheckin(site0, input?.client, newId, input?.fetchImpl)
+      hooks.auth.checkin = checkin.checkin
+    }
+
+    // 派猫猫旅行的后台循环（开关在每轮里读，关着就不发请求）
+    if (newId === "codebuddy" && input?.directory) {
+      try {
+        startTravelLoop({ directory: input.directory, provider: newId, magpie, client: input?.client, fetchImpl: input?.fetchImpl })
+      } catch {}
+    }
+
+    // 老版本存下来的账号还在旧 id 下：搬一次
+    if (input?.directory) {
+      try {
+        await renameProviderKeys(input.directory, ID_RENAMES.filter(([from]) => from === oldId))
+      } catch {}
+    }
+
+    return hooks
+  }
+}
+
+export const WorkBuddyImportPlugin = withImport(WorkBuddyAuthPlugin, "workbuddy")
+export const WorkBuddyAIImportPlugin = withImport(WorkBuddyAIAuthPlugin, "workbuddy-ai")
