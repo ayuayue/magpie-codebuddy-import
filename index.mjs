@@ -307,7 +307,7 @@ function withImport(factory, oldId) {
       hooks.auth.options.push({
         key: TRAVEL_OPTION,
         label: "自动派猫猫旅行",
-        description: "每 30 分钟派一次，猫猫回来后 15 分钟内领奖；只跑国内版账号，默认关。开关在本 agent 的编辑面板里；也可以在 magpie 配置目录放一个名为 travel-on 的空文件。",
+        description: "每 30 分钟派一次，猫猫回来后 15 分钟内领奖；只跑国内版账号，默认关。开关在 Providers 页展开 CodeBuddy 那一行里，或放一个 travel-on 文件，或用 node scripts/travel.mjs on。",
       })
     }
 
