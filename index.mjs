@@ -25,6 +25,7 @@ import {
   variantOf,
 } from "./lib/accounts.mjs"
 import { TRAVEL_OPTION, startTravelLoop } from "./lib/travel.mjs"
+import { beijingDay, dayWindows, meterAsked } from "./lib/usage.mjs"
 
 // oldId → 新 id 与显示名
 const SITES = {
@@ -59,9 +60,29 @@ function writeState(directory, state) {
 
 // WorkBuddy 的每日签到。上游插件没有 auth.checkin，magpie 内置的代签又只认
 // provider id "workbuddy"——这里自己实现，接口流程照抄 magpie 的
-// workbuddy_checkin.go：先查活动状态，未签则领，错误码 1001/1002/1003 分别是
-// 已签 / 不符合 / 结束。请求头按 workbuddy-switch 的 billing 请求配（不带
-// WorkBuddy 客户端 UA 也能调这些接口），Origin 跟随请求 host。
+// workbuddy_checkin.go：先查活动状态，未签则领。请求头按 workbuddy-switch 的
+// billing 请求配（不带 WorkBuddy 客户端 UA 也能调这些接口），Origin 跟随请求 host。
+//
+// 接口返回是 snake_case（today_checked_in、streak_days）。早前照 camelCase 读，
+// 每次都以为「今天还没签」，转去调 claim，被 WorkBuddy 以 HTTP 400
+// code 10001「今天已签到，请明天再来」顶回来 —— 10001 是它的通用错误码，
+// 1001/1002/1003 那套并没用上，所以只能按文案分辨：否则一条本来已签成功的
+// 记录会被记成 failed，那句提示在卡片上一挂就是一整天。
+const ALREADY = /已签到|已打卡|明天再来|already\b.*check(?:ed)?\s*in|come back tomorrow/i
+const INELIGIBLE = /不符合|不满足|未参与|不具备|not eligible|ineligible/i
+const ENDED = /已结束|活动结束|已过期|activit\w* (?:ended|over)|expired/i
+
+const pick = (...names) => (o) => names.map((n) => o?.[n]).find((v) => v !== undefined && v !== null)
+const num = (v) => (typeof v === "number" ? (Number.isFinite(v) ? v : undefined) : typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : undefined)
+const yes = (v) => v === true || v === 1 || v === "1" || v === "true"
+
+// until 下一个北京零点：WorkBuddy 的签到按北京日重置，告诉 magpie 这个答案几时
+// 作废，它就不必到中午前反复追问，也不会把昨天尾边的答案记到今天。
+function nextBeijingDay(at = Date.now()) {
+  const bj = new Date(at + 8 * 3600_000)
+  return new Date(Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate() + 1) - 8 * 3600_000).toISOString()
+}
+
 function makeCheckin(vendor, client, newId, fetchImpl) {
   const doFetch = fetchImpl ?? globalThis.fetch
   const origin = new URL(vendor.endpoint).origin
@@ -88,9 +109,10 @@ function makeCheckin(vendor, client, newId, fetchImpl) {
       throw e
     }
     const env = await res.json().catch(() => ({}))
-    if (env && typeof env.code === "number" && env.code !== 0 && env.code !== 200) {
+    const code = Number(env?.code) || 0
+    if (code && code !== 200) {
       const e = new Error(env.msg ?? env.message ?? "code " + env.code)
-      e.code = env.code
+      e.code = code
       throw e
     }
     return env?.data ?? env ?? {}
@@ -105,35 +127,54 @@ function makeCheckin(vendor, client, newId, fetchImpl) {
       }
       // token 快过期时先续期（续期结果由 magpie 存回）
       const auth = await _internal.fresh(vendor, client, stored)
+      const until = nextBeijingDay()
       let status
       try {
         status = await call(auth, "/v2/billing/meter/checkin-activity-status")
       } catch (e) {
         if (e.status === 401) {
-          // 签到 401 但额度读得动：WorkBuddy 的签到只认它自家 App 的设备令牌
+          // 签到 401 但额度读得动：WorkBuddy 的签到只认它自家 App 的设备令牌。
+          // 额度的读法要和用量那条一致（WorkBuddy 客户端的头），否则本来好的
+          // 账号会被误判成登录失效
           try {
-            await call(auth, "/billing/meter/get-user-resource-summary")
+            await meterAsked(vendor, auth, "/billing/meter/get-user-resource-summary", {}, doFetch)
             return {
               outcome: "inactive",
+              until,
               message: "WorkBuddy 的签到只认它自己的 App（缺设备令牌），请在 WorkBuddy App 里签到",
             }
           } catch {
             throw new Error("WorkBuddy 拒绝了这个账号的登录（401），请重新登录")
           }
         }
+        // 查不到状态不等于签到失败：按文案给个说法，别把读不到报成签不进
+        if (ALREADY.test(e.message)) return { outcome: "done", until, message: e.message }
+        if (ENDED.test(e.message)) return { outcome: "inactive", until, message: e.message }
+        if (INELIGIBLE.test(e.message)) return { outcome: "ineligible", until, message: e.message }
         throw e
       }
-      if (!status.active) return { outcome: "inactive" }
-      if (status.todayCheckedIn) {
-        return { outcome: "done", credit: status.todayCredit, streak: status.streakDays }
+      if (!yes(status?.active ?? status?.isActive ?? status?.active_status)) {
+        return { outcome: "inactive", until }
+      }
+      const credit = num(pick("todayCredit", "today_credit")(status))
+      const streak = num(pick("streakDays", "streak_days")(status))
+      const dates = pick("checkinDates", "checkin_dates")(status)
+      if (yes(pick("todayCheckedIn", "today_checked_in")(status)) || (Array.isArray(dates) && dates.includes(beijingDay(0)))) {
+        return { outcome: "done", credit, streak, until }
       }
       try {
         const got = await call(auth, "/v2/billing/meter/daily-checkin")
-        return { outcome: "claimed", credit: got.credit, streak: got.streakDays, message: got.message }
+        return {
+          outcome: "claimed",
+          credit: num(pick("credit", "creditAmount", "credit_amount", "todayCredit", "today_credit")(got)) ?? credit,
+          streak: num(pick("streakDays", "streak_days")(got)) ?? streak,
+          message: pick("message", "msg")(got),
+          until,
+        }
       } catch (e) {
-        if (e.code === 1001) return { outcome: "done", streak: status.streakDays }
-        if (e.code === 1002) return { outcome: "ineligible", message: e.message }
-        if (e.code === 1003) return { outcome: "inactive", message: e.message }
+        if (e.code === 1001 || ALREADY.test(e.message)) return { outcome: "done", streak, until, message: e.message }
+        if (e.code === 1002 || INELIGIBLE.test(e.message)) return { outcome: "ineligible", message: e.message, until }
+        if (e.code === 1003 || ENDED.test(e.message)) return { outcome: "inactive", message: e.message, until }
         throw e
       }
     },
@@ -315,6 +356,24 @@ function withImport(factory, oldId) {
     if (!hooks.auth.checkin) {
       const checkin = makeCheckin(site0, input?.client, newId, input?.fetchImpl)
       hooks.auth.checkin = checkin.checkin
+    }
+
+    // 上游报的一周期已用是几十个滚动 30 天包的加总，包一过期就倒退，而 magpie
+    // 的按天用量只能取相邻两次读数的差、倒退就当没发生 —— 于是当天常显示 0。
+    // 这里补一行真数：WorkBuddy 自己的请求流水按北京日聚合（含从它自家 App 走的
+    // 请求）。不给 used/amount/limit，magpie 就当纯展示行，既不参与按天差分，也
+    // 不影响路由看剩余额度。读不到就什么也不加，卡片照旧。
+    const baseUsage = hooks?.auth?.usage
+    if (typeof baseUsage === "function") {
+      hooks.auth.usage = async (getAuth) => {
+        const out = await baseUsage(getAuth)
+        if (!out || out.error || out.signIn === "expired") return out
+        try {
+          const a = await _internal.fresh(site0, input?.client, await getAuth())
+          out.windows = [...(out.windows ?? []), ...(await dayWindows(site0, a, { fetchImpl: input?.fetchImpl }))]
+        } catch {}
+        return out
+      }
     }
 
     // 派猫猫旅行的后台循环（开关在每轮里读，关着就不发请求）

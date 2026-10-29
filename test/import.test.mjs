@@ -228,6 +228,44 @@ test("签到：重复签返回 done", async () => {
   assert.equal((await auth.checkin(async () => AUTH)).outcome, "done")
 })
 
+// WorkBuddy 的签到接口返回的是 snake_case（实测 2026-10-29 四个国内账号）。
+// 早前只读 camelCase，等于每个已签的账号都被当成没签，转去调 claim。
+test("签到：认 snake_case 的真实返回，且已签就不再调 claim", async () => {
+  const fetch = stubFetch([
+    json({ code: 0, data: { active: true, today_checked_in: true, today_credit: 100, streak_days: 30 } }),
+  ])
+  const auth = await checkinHook(fetch)
+  const out = await auth.checkin(async () => AUTH)
+  assert.equal(out.outcome, "done")
+  assert.equal(out.credit, 100)
+  assert.equal(out.streak, 30)
+  assert.equal(fetch.calls.length, 1, "已签的账号不该再去调 claim")
+  // until：WorkBuddy 的签到按北京日重置，这个答案到下一个北京零点为止
+  const until = Date.parse(out.until)
+  assert.ok(until > Date.now() && until - Date.now() <= 24 * 3600_000)
+  assert.equal(new Date(until + 8 * 3600_000).toISOString().slice(11, 19), "00:00:00")
+})
+
+test("签到：claim 被「今天已签到」顶回来（10001）算已签，不是一天的失败", async () => {
+  // 回归：10001 是 WorkBuddy 的通用错误码，早前不认识它就把成功报成 failed，
+  // magpie 于是把「今天已签到，请明天再来」挂在卡片上一整天。
+  const auth = await checkinHook(stubFetch([
+    json({ code: 0, data: { active: true, today_checked_in: false, streak_days: 29 } }),
+    new Response(JSON.stringify({ code: 10001, msg: "今天已签到，请明天再来" }), { status: 400 }),
+  ]))
+  const out = await auth.checkin(async () => AUTH)
+  assert.equal(out.outcome, "done")
+  assert.equal(out.streak, 29)
+})
+
+test("签到：状态接口说没开始时不调 claim", async () => {
+  const fetch = stubFetch([json({ code: 0, data: { active: false, today_checked_in: false } })])
+  const auth = await checkinHook(fetch)
+  const out = await auth.checkin(async () => AUTH)
+  assert.equal(out.outcome, "inactive")
+  assert.equal(fetch.calls.length, 1, "不该多发一次 claim 请求")
+})
+
 test("签到：401 但额度读得动 → 提示去 App 里签", async () => {
   const auth = await checkinHook(stubFetch([
     new Response("gateway", { status: 401 }),

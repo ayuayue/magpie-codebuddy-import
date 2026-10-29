@@ -7,6 +7,7 @@
 | 能力 | 说明 |
 | :-- | :-- |
 | 导入账号 JSON | 把 [workbuddy-switch](https://github.com/changexbc/workbuddy-switch) 导出的账号直接变成 magpie 登录，整份文件粘一次全导入 |
+| 今日已用积分 | 上游只报「一周期累计已用」，magpie 的按天用量靠两次读数相减，被 WorkBuddy 的滚动包打回原形；这里补 WorkBuddy 自己请求流水的真数 |
 | 每日签到 | 上游没有 `auth.checkin`，这里补上；magpie 每个北京日替每个账号签一次 |
 | 派猫猫旅行 | 国内版成长中心的活动，派发 30 分钟一轮、领奖 15 分钟一轮，默认关 |
 
@@ -108,7 +109,37 @@ magpie codebuddy group/codebuddy      # 让 CodeBuddy Code 用这个组
 > 注意：改 provider id 之前建的路由组会失效（组里还是 `workbuddy/...`，请求会报
 > `404 unknown model`），重建一次即可。
 
-## 三、每日签到
+## 三、今日已用积分
+
+账号卡片在原来的 `Credits`（一周期累计）下面多一行「今日」，比如：
+
+```
+Credits   3954.64 / 4528
+今日      141.98 积分 · 10 次请求
+```
+
+为什么需要它：magpie 的「今天 / 近 7 天 / 近 30 天」没有别的来源，只能把供应商报的
+**累计已用**在相邻两次读数之间相减，差值为负就当周期重开、这一段不计。WorkBuddy 的
+积分不是一个整包，而是几十个各自滚动 30 天的包（实测一个账号 69 个、每包 50 分，
+发放时间散布在全天），包一过期累计值就倒退一截，于是当天经常显示 0，或把昨天的量
+记到今天。实测 2026-10-28：某账号真实 551.95 分，magpie 一条没记到；另一个真实
+83.68 分只记到 5.22 分。
+
+「今日」这行走 WorkBuddy 自己的请求流水 `/billing/meter/get-user-request-usage`，
+按北京日聚合，**从它家 App/IDE 发的请求也算在内**，不只走 magpie 这条路。显示成
+`0 积分 · 7 次请求` 时意思是「用了，但这些模型不要积分」（x0.00 的免费模型），
+不是没数据；`今天还没有请求` 才是当天确实一笔没发。
+
+两个已知边界：
+
+- 只查当天，不一次查一周。范围查询会把跨午夜的行重分到两边（同一账号逐日查
+  10-28 得 71.99/48 笔、10-29 得 141.98/10 笔，一次查 10-23~10-29 却报 10-28
+  198.86/44 笔、10-29 11.07/8 笔），逐日查两边才对得上。
+- 一天超过 2000 笔时只数到前 2000 笔，行首标 `≥`。
+- 这一行纯展示（不给 `used` / `amount` / `limit`），magpie 既不会拿它去做按天差分，
+  路由也不拿它当剩余额度；进度条和接班判断还是照原来的一周期窗口走。
+
+## 四、每日签到
 
 magpie 每个北京日替**每个**登录账号签一次（不是只签第一个）。手动：
 
@@ -119,10 +150,16 @@ magpie accounts checkin
 界面上开关只画在供应商**第一个**账号的卡片上（它是供应商级开关），其他账号的卡片
 显示各自的签到结果。
 
-部分账号 WorkBuddy 只认自家 App 发起的签到（缺设备令牌），这种情况会提示
-「请在 WorkBuddy App 里签到」，不会无限重试。
+签到的返回是 snake_case（`today_checked_in`、`streak_days`），已签的账号直接报
+`done`，不会再去做一次注定被拒的领取；WorkBuddy 用 HTTP 400 + 通用码 10001 说
+「今天已签到，请明天再来」时也算已签，不当成一天的失败挂在卡片上。每个答案都带
+`until`（下一个北京零点），magpie 到点再问，不必到中午前反复追问。
 
-## 四、派猫猫旅行
+部分账号 WorkBuddy 只认自家 App 发起的签到（缺设备令牌），这种情况会提示
+「请在 WorkBuddy App 里签到」，不会无限重试；国际版没有签到活动时报「当前没有签到
+活动」。
+
+## 五、派猫猫旅行
 
 国内版成长中心的活动。状态机：`idle` → 派出 → `traveling` → 到点 `arrived` → 领奖。
 插件在后台跑两条循环：**派发 30 分钟一轮**、**领奖 15 分钟一轮**，启动先各跑一轮。
@@ -154,7 +191,7 @@ node scripts/travel.mjs run      # 立刻跑一轮，不用等 15 分钟
   同时刷新把 token 用废）
 - 状态记在 `~/.config/magpie/travel-state.json`，含每账号状态和最近 200 条日志
 
-## 五、常见问题
+## 六、常见问题
 
 **界面里找不到旅行开关** —— 它不在 Providers 列表里，要展开 CodeBuddy 那一行；
 或者直接用 `node scripts/travel.mjs on`。
@@ -190,11 +227,12 @@ magpie plugin rm github:ayuayue/magpie-codebuddy-import  # 卸载（账号保留
 ## 开发
 
 ```sh
-node --test test/import.test.mjs    # 19 个用例
+node --test test/import.test.mjs test/usage.test.mjs    # 28 个用例
 ```
 
-- `index.mjs` 插件入口：id 改名、开关、签到、旅行循环的挂载
+- `index.mjs` 插件入口：id 改名、开关、签到、用量补按日真数、旅行循环的挂载
 - `lib/accounts.mjs` 账号解析、写 `plugin-auth.json`、旧 id 迁移
+- `lib/usage.mjs` 按北京日聚合 WorkBuddy 的请求流水（今日积分）、billing 接口的请求头
 - `lib/travel.mjs` 派猫猫旅行
 - `vendor/opencode-workbuddy-auth.mjs` 上游副本（MIT，见 `vendor/LICENSE`），
   更新：`curl -sL https://raw.githubusercontent.com/magpie-community/plugins/HEAD/packages/workbuddy/index.mjs -o vendor/opencode-workbuddy-auth.mjs`
