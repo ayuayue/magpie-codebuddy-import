@@ -10,7 +10,7 @@
 | 导出账号 JSON | 反过来：把 magpie 里的账号导成 workbuddy-switch 的格式，换机器、做备份用 |
 | 今日已用积分 | 上游只报「一周期累计已用」，magpie 的按天用量靠两次读数相减，被 WorkBuddy 的滚动包打回原形；这里补 WorkBuddy 自己请求流水的真数 |
 | 每日签到 | 上游没有 `auth.checkin`，这里补上；magpie 每个北京日替每个账号签一次 |
-| 派猫猫旅行 | 国内版成长中心的活动，派发 30 分钟一轮、领奖 15 分钟一轮，默认关 |
+| 派猫猫旅行 | 国内版成长中心的活动，派发 5 小时一轮、领奖 45 分钟一轮，默认关；也能随时手动跑一轮 |
 
 界面显示 **CodeBuddy / CodeBuddy AI**，provider id 是 `codebuddy` / `codebuddy-ai`
 （上游登记的是 workbuddy 系，这里改了 id 并把旧账号自动迁移过来），所以模型 id 是
@@ -203,8 +203,31 @@ node scripts/travel.mjs on     # 等价于界面开关，改完下一轮就生�
 查看进度：
 
 ```sh
-node scripts/travel.mjs status   # 每个账号今天派了没、领了多少、跳过原因
-node scripts/travel.mjs run      # 立刻跑一轮，不用等下一轮
+node scripts/travel.mjs status   # 开关状态 + 每个账号今天派了没、领了多少、跳过原因
+node scripts/travel.mjs run      # 立刻跑一轮（派发 + 领奖），不看开关
+```
+
+### 只想手动跑一次
+
+默认关，平时不自动跑；要用的时候跑一轮就行。`run` 不看开关，派发和领奖都走一遍，
+已经收工的账号连状态都不查（零请求）。装进 magpie 之后脚本藏在插件目录里：
+
+```sh
+node ~/.config/magpie/plugins/node_modules/magpie-codebuddy-import/scripts/travel.mjs run
+```
+
+在仓库目录里就是 `node scripts/travel.mjs run`。输出逐条打印派出/领奖，最后摊开
+当天每个账号的状态：
+
+```
+手动跑一轮（派发 + 领奖，不看开关），4 个账号：
+  派出 caoayu 西湖
+  领奖 鱼 +10
+本轮动作 2 个
+
+今天 2026-10-29
+  caoayu  已派出→西湖 · 旅行中
+  鱼  已领奖 +10 · 今日收工（今天次数用完）
 ```
 
 细节：
@@ -220,8 +243,8 @@ node scripts/travel.mjs run      # 立刻跑一轮，不用等下一轮
 **界面里找不到旅行开关** —— 它不在 Providers 列表里，要展开 CodeBuddy 那一行；
 或者直接用 `node scripts/travel.mjs on`。
 
-**搜不到这个插件** —— magpie 的 Discover 只列 npm 上的包，本插件目前只能按
-`github:ayuayue/magpie-codebuddy-import` 装。
+**搜不到这个插件** —— 在 Discover 里搜 `codebuddy` 或 `magpie-codebuddy-import`，
+「Unofficial」那一栏里；也可以直接 `magpie plugin add magpie-codebuddy-import`。
 
 **用着用着断了 / 本轮没有输出（stopReason=refusal）** —— 先看
 `magpie usage --csv --last 1h`：`status` 是 200 说明网关正常返回了，问题在上游拒答
@@ -229,15 +252,18 @@ node scripts/travel.mjs run      # 立刻跑一轮，不用等下一轮
 unapproved channel"）或 agent 自己；换个模型（`magpie codebuddy codebuddy/hy3`）再试
 可以快速区分。
 
-**改了插件代码不生效** —— 现在装的是 GitHub 上的副本。改完要 commit + push，再
-`magpie plugin rm github:ayuayue/magpie-codebuddy-import` 重装。本地调试可以
-`magpie plugin add "<本地目录>"`。
+**改了插件代码不生效** —— 本地仓库和 magpie 里装的那份是两个位置（`~/.config/magpie/plugins/node_modules/`）。
+改完要发版（`npm version patch && npm publish`）再 `magpie plugin rm` + `add` 重装；
+只调代码用 `magpie plugin add "<本地目录>"`。
 
 ## 更新 / 卸载
 
 ```sh
-magpie plugin update                                    # 拉最新提交
-magpie plugin rm github:ayuayue/magpie-codebuddy-import  # 卸载（账号保留）
+magpie plugin update                                    # 有新版会提示
+magpie plugin rm magpie-codebuddy-import                # 卸载（账号保留）
+
+# update 说「已是最新」但版本没动时（bun 的 lockfile 会钉住旧版），重装一次
+magpie plugin rm magpie-codebuddy-import && magpie plugin add magpie-codebuddy-import
 ```
 
 要连账号一起清掉，卸载前先 `magpie plugin logout codebuddy` / `codebuddy-ai`。
