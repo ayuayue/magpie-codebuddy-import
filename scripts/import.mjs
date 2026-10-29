@@ -13,7 +13,9 @@ import { join } from "node:path"
 
 import { accountsFrom, nameOf, variantOf } from "../lib/accounts.mjs"
 
-const PROVIDERS = { cn: "workbuddy", ai: "workbuddy-ai" }
+// 插件的 provider 是改名后的 codebuddy / codebuddy-ai（上游叫 workbuddy / workbuddy-ai），
+// 而 magpie plugin login 认的是插件登记的 id，所以这里必须用新 id。
+const PROVIDERS = { cn: "codebuddy", ai: "codebuddy-ai" }
 const METHOD = "导入账号 JSON"
 
 function magpie() {
