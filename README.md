@@ -19,7 +19,9 @@
 ## 快速上手
 
 ```sh
-# 1. 装
+# 1. 装（npm 上的版本，和 github: 二选一）
+magpie plugin add magpie-codebuddy-import
+# 或者跟着仓库走最新提交：
 magpie plugin add github:ayuayue/magpie-codebuddy-import
 
 # 2. 重启 magpie（插件改动都要重启才生效）
