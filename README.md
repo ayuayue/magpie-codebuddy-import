@@ -181,7 +181,12 @@ magpie accounts checkin
 ## 五、派猫猫旅行
 
 国内版成长中心的活动。状态机：`idle` → 派出 → `traveling` → 到点 `arrived` → 领奖。
-插件在后台跑两条循环：**派发 30 分钟一轮**、**领奖 15 分钟一轮**，启动先各跑一轮。
+插件在后台跑两条循环：**领奖 45 分钟一轮**、**派发 5 小时一轮**。
+
+节奏是故意放慢的：workbuddy-switch 的 15/30 分钟是「客户端」的频率，脚本照抄、还卡着
+整点跑，最容易被认出来。这里每轮在基准的 60%–140% 之间随机，**北京时间 01:00–08:00
+完全不发请求**，启动后也先等 3–10 分钟再跑第一轮。一个账号一天本来就只派一次，拉长
+间隔损失不了多少，省掉的是每天近百次查状态。
 
 **开关默认关**，三种打开方式（满足其一）：
 
@@ -199,7 +204,7 @@ node scripts/travel.mjs on     # 等价于界面开关，改完下一轮就生�
 
 ```sh
 node scripts/travel.mjs status   # 每个账号今天派了没、领了多少、跳过原因
-node scripts/travel.mjs run      # 立刻跑一轮，不用等 15 分钟
+node scripts/travel.mjs run      # 立刻跑一轮，不用等下一轮
 ```
 
 细节：
@@ -246,7 +251,7 @@ magpie plugin rm github:ayuayue/magpie-codebuddy-import  # 卸载（账号保留
 ## 开发
 
 ```sh
-node --test test/import.test.mjs test/usage.test.mjs test/export.test.mjs    # 30 个用例
+node --test test/import.test.mjs test/usage.test.mjs test/export.test.mjs test/travel.test.mjs    # 34 个用例
 ```
 
 - `index.mjs` 插件入口：id 改名、开关、签到、用量补按日真数、旅行循环的挂载

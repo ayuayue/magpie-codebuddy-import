@@ -1,6 +1,6 @@
 {
   "name": "magpie-codebuddy-import",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "magpie 的 CodeBuddy(WorkBuddy) 供应商插件：导入/导出 workbuddy-switch 账号 JSON、每日签到、派猫猫旅行",
   "type": "module",
   "main": "./index.mjs",
