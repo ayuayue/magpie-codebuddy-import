@@ -7,6 +7,7 @@
 | 能力 | 说明 |
 | :-- | :-- |
 | 导入账号 JSON | 把 [workbuddy-switch](https://github.com/changexbc/workbuddy-switch) 导出的账号直接变成 magpie 登录，整份文件粘一次全导入 |
+| 导出账号 JSON | 反过来：把 magpie 里的账号导成 workbuddy-switch 的格式，换机器、做备份用 |
 | 今日已用积分 | 上游只报「一周期累计已用」，magpie 的按天用量靠两次读数相减，被 WorkBuddy 的滚动包打回原形；这里补 WorkBuddy 自己请求流水的真数 |
 | 每日签到 | 上游没有 `auth.checkin`，这里补上；magpie 每个北京日替每个账号签一次 |
 | 派猫猫旅行 | 国内版成长中心的活动，派发 30 分钟一轮、领奖 15 分钟一轮，默认关 |
@@ -74,6 +75,22 @@ node scripts/import.mjs          # 不带参数：自动找 Downloads / 桌面�
 `magpie plugin login`，和界面是同一条路。
 
 已导入过的 uid 会跳过，同一份文件反复导入不会变成两份。
+
+### 导出（备份 / 迁移）
+
+```sh
+node scripts/export.mjs           # 写到 Downloads/wb-switch-accounts-<日期>.json
+node scripts/export.mjs 备份.json  # 写到指定文件
+node scripts/export.mjs -         # 打到标准输出，自己接管道
+```
+
+导出的就是下面那份 JSON 格式，**能原样再导入**：换台机器 `node scripts/import.mjs` 就搬过去了。
+默认文件名是 `wb-switch-accounts-*.json`，正好是 `import.mjs` 不带参数时会去找的那种，导完直接导回。
+
+只导 `codebuddy` / `codebuddy-ai` 下的 oauth 账号：API key 那种没有 access/refresh，
+导出去也不是一个能登录的号；别的供应商（qoder、minimax…）不碰。
+
+> 文件里有 access / refresh token，等于账号本身，别发群里、别传网盘。
 
 ### JSON 格式
 
@@ -227,11 +244,11 @@ magpie plugin rm github:ayuayue/magpie-codebuddy-import  # 卸载（账号保留
 ## 开发
 
 ```sh
-node --test test/import.test.mjs test/usage.test.mjs    # 28 个用例
+node --test test/import.test.mjs test/usage.test.mjs test/export.test.mjs    # 30 个用例
 ```
 
 - `index.mjs` 插件入口：id 改名、开关、签到、用量补按日真数、旅行循环的挂载
-- `lib/accounts.mjs` 账号解析、写 `plugin-auth.json`、旧 id 迁移
+- `lib/accounts.mjs` 账号解析、写 `plugin-auth.json`、导出、旧 id 迁移
 - `lib/usage.mjs` 按北京日聚合 WorkBuddy 的请求流水（今日积分）、billing 接口的请求头
 - `lib/travel.mjs` 派猫猫旅行
 - `vendor/opencode-workbuddy-auth.mjs` 上游副本（MIT，见 `vendor/LICENSE`），
