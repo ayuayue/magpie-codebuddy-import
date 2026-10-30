@@ -35,7 +35,7 @@ test("按北京日聚合当天流水，请求头与用量那条一致", async ()
   )
   const out = await creditsOn(site, AUTH, { day: DAY, fetchImpl })
   assert.equal(out.credit, 12.5)
-  assert.equal(out.count, 2, "免费模型 0 积分也是一次请求，要数进去")
+  assert.equal(out.count, 2, "免费模型 0 积分也是一笔，要数进去")
   assert.equal(out.capped, false)
   const body = fetchImpl.calls[0].body
   assert.deepEqual([body.startTime, body.endTime], [`${DAY} 00:00:00`, `${DAY} 23:59:59`], "只查一天：范围查询会把跨午夜的行重分到两边")
@@ -63,7 +63,7 @@ test("卡片上是今日一行真数，且只作展示", async () => {
   const fetchImpl = ledger(page([`${beijingDay(0)} 09:00:00`, 83.68]), page())
   const [w] = await dayWindows(site, AUTH, { fetchImpl })
   assert.equal(w.name, "今日")
-  assert.equal(w.display, "83.68 积分 · 1 次请求")
+  assert.equal(w.display, "83.68 积分 · 1 笔")
   assert.equal(w.aside, true)
   // 不给 used/amount/limit：magpie 就当文本行，既不参与按天差分，也不给路由报
   // 额度 —— 一周期已用是几十个滚动包加总、随时会倒退，不能当基线
@@ -123,7 +123,7 @@ test("用量卡片在原来的一周期窗口后面补上今日一行", async ()
     assert.equal(out.windows[0].name, "Credits")
     assert.equal(out.windows[0].amount, 120, "上游那个一周期窗口原样保留（进度条和路由还靠它）")
     assert.deepEqual(out.windows.slice(1).map((w) => w.name), ["今日"])
-    assert.equal(out.windows[1].display, "40.5 积分 · 2 次请求")
+    assert.equal(out.windows[1].display, "40.5 积分 · 2 笔")
   } finally {
     globalThis.fetch = real
     rmSync(directory, { recursive: true, force: true })
@@ -163,7 +163,7 @@ test("换一天重记基线；没有汇总就不算", () => {
 
 test("流水还没封桶时，今日那行用汇总的下限顶着", async () => {
   const [w] = await dayWindows(site, AUTH, { fetchImpl: ledger(page([`${beijingDay(0)} 09:00:00`, 9.64])), floor: 15.5 })
-  assert.equal(w.display, "15.5 积分 · 1 次请求", "下限比流水大就用下限，次数还是流水的")
+  assert.equal(w.display, "15.5 积分 · 1 笔", "下限比流水大就用下限，次数还是流水的")
 
   const none = await dayWindows(site, AUTH, { fetchImpl: ledger(page()), floor: 3.2 })
   assert.equal(none[0].display, "3.2 积分", "流水里还没有，但汇总说用过了")
@@ -195,15 +195,15 @@ test("刚用完积分：汇总动了、流水还没封桶，今日那行跟着�
       fetchImpl,
     })
     const first = await hooks.auth.usage(async () => AUTH)
-    assert.equal(first.windows[1].display, "40.5 积分 · 1 次请求", "第一次读只记基线")
+    assert.equal(first.windows[1].display, "40.5 积分 · 1 笔", "第一次读只记基线")
 
     used = 126 // 又用了 6 分，流水还是那一桶
     const second = await hooks.auth.usage(async () => AUTH)
-    assert.equal(second.windows[1].display, "46.5 积分 · 1 次请求", "不等封桶，跟着汇总先到 46.5")
+    assert.equal(second.windows[1].display, "46.5 积分 · 1 笔", "不等封桶，跟着汇总先到 46.5")
 
     used = 100 // 包过期，累计倒退
     const third = await hooks.auth.usage(async () => AUTH)
-    assert.equal(third.windows[1].display, "46.5 积分 · 1 次请求", "倒退不往回跳")
+    assert.equal(third.windows[1].display, "46.5 积分 · 1 笔", "倒退不往回跳")
   } finally {
     globalThis.fetch = real
     rmSync(directory, { recursive: true, force: true })
