@@ -181,6 +181,15 @@ function makeCheckin(vendor, client, newId, fetchImpl) {
   }
 }
 
+// 卡片上 Credits 条那一行的已用数：今日的实时下限由它推出来
+function usedCredits(windows) {
+  const list = Array.isArray(windows) ? windows : []
+  const named = list.find((w) => w && w.name === "Credits" && Number.isFinite(w.amount))
+  if (named) return named.amount
+  const any = list.find((w) => w && !w.aside && Number.isFinite(w.amount))
+  return any ? any.amount : undefined
+}
+
 const IMPORT_HINT =
   "不用浏览器：把账号 JSON 粘到下面的输入框，再点「登录」。" +
   "（这个框在 magpie 里叫「验证码」，这里不是验证码。）"
@@ -369,8 +378,19 @@ function withImport(factory, oldId) {
         const out = await baseUsage(getAuth)
         if (!out || out.error || out.signIn === "expired") return out
         try {
-          const a = await _internal.fresh(site0, input?.client, await getAuth())
-          out.windows = [...(out.windows ?? []), ...(await dayWindows(site0, a, { fetchImpl: input?.fetchImpl }))]
+          const stored = await getAuth()
+          const a = await _internal.fresh(site0, input?.client, stored)
+          // 条上那个一周期已用是今日实时下限的来源：流水 5 分钟才封一桶，这中间
+          // 的几分钟靠它顶着，免得刚用完积分时条在动、「今日」不动
+          out.windows = [
+            ...(out.windows ?? []),
+            ...(await dayWindows(site0, a, {
+              fetchImpl: input?.fetchImpl,
+              amount: usedCredits(out.windows),
+              directory: input?.directory,
+              uid: stored?.uid,
+            })),
+          ]
         } catch {}
         return out
       }
