@@ -76,8 +76,8 @@ const pick = (...names) => (o) => names.map((n) => o?.[n]).find((v) => v !== und
 const num = (v) => (typeof v === "number" ? (Number.isFinite(v) ? v : undefined) : typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : undefined)
 const yes = (v) => v === true || v === 1 || v === "1" || v === "true"
 
-// until 下一个北京零点：WorkBuddy 的签到按北京日重置，告诉 magpie 这个答案几时
-// 作废，它就不必到中午前反复追问，也不会把昨天尾边的答案记到今天。
+// until 下一个北京零点：只有真领到了才给。给早了 magpie 就当这一天定了，不再追问
+// 那个「可能是昨天的已签到」，卡片上的提示也就一直挂着（见 makeCheckin 里那段）。
 function nextBeijingDay(at = Date.now()) {
   const bj = new Date(at + 8 * 3600_000)
   return new Date(Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate() + 1) - 8 * 3600_000).toISOString()
@@ -137,6 +137,11 @@ function makeCheckin(vendor, client, newId, fetchImpl) {
       }
       // token 快过期时先续期（续期结果由 magpie 存回）；桌面端登录现读桌面端文件
       const auth = await authFor(vendor, client, stored)
+      // until 只说一件事：这个答案几时作废。只有真领到了才说到下一个北京零点。
+      // magpie 见到 until 就把这一天当定了，不再追问；而「已签到」「没活动」这类
+      // 答案可能是前一天还没翻页（#3326），它要留着每 30 分钟再问一次，卡片上那句
+      // 「签到日可能还没翻页，magpie 稍后会再问」才是真的。给了 until，那句就挂在
+      // 卡片上一整天，直到第二天 —— 实测 2026-10-30 四个账号都是这样。
       const until = nextBeijingDay()
       let status
       try {
@@ -150,7 +155,6 @@ function makeCheckin(vendor, client, newId, fetchImpl) {
             await meterAsked(vendor, auth, "/billing/meter/get-user-resource-summary", {}, doFetch)
             return {
               outcome: "inactive",
-              until,
               message: "WorkBuddy 的签到只认它自己的 App（缺设备令牌），请在 WorkBuddy App 里签到",
             }
           } catch {
@@ -158,19 +162,19 @@ function makeCheckin(vendor, client, newId, fetchImpl) {
           }
         }
         // 查不到状态不等于签到失败：按文案给个说法，别把读不到报成签不进
-        if (ALREADY.test(e.message)) return { outcome: "done", until, message: e.message }
-        if (ENDED.test(e.message)) return { outcome: "inactive", until, message: e.message }
-        if (INELIGIBLE.test(e.message)) return { outcome: "ineligible", until, message: e.message }
+        if (ALREADY.test(e.message)) return { outcome: "done", message: e.message }
+        if (ENDED.test(e.message)) return { outcome: "inactive", message: e.message }
+        if (INELIGIBLE.test(e.message)) return { outcome: "ineligible", message: e.message }
         throw e
       }
       if (!yes(status?.active ?? status?.isActive ?? status?.active_status)) {
-        return { outcome: "inactive", until }
+        return { outcome: "inactive" }
       }
       const credit = num(pick("todayCredit", "today_credit")(status))
       const streak = num(pick("streakDays", "streak_days")(status))
       const dates = pick("checkinDates", "checkin_dates")(status)
       if (yes(pick("todayCheckedIn", "today_checked_in")(status)) || (Array.isArray(dates) && dates.includes(beijingDay(0)))) {
-        return { outcome: "done", credit, streak, until }
+        return { outcome: "done", credit, streak }
       }
       try {
         const got = await call(auth, "/v2/billing/meter/daily-checkin")
@@ -182,13 +186,22 @@ function makeCheckin(vendor, client, newId, fetchImpl) {
           until,
         }
       } catch (e) {
-        if (e.code === 1001 || ALREADY.test(e.message)) return { outcome: "done", streak, until, message: e.message }
-        if (e.code === 1002 || INELIGIBLE.test(e.message)) return { outcome: "ineligible", message: e.message, until }
-        if (e.code === 1003 || ENDED.test(e.message)) return { outcome: "inactive", message: e.message, until }
+        if (e.code === 1001 || ALREADY.test(e.message)) return { outcome: "done", streak, message: e.message }
+        if (e.code === 1002 || INELIGIBLE.test(e.message)) return { outcome: "ineligible", message: e.message }
+        if (e.code === 1003 || ENDED.test(e.message)) return { outcome: "inactive", message: e.message }
         throw e
       }
     },
   }
+}
+
+// 卡片上 Credits 条那一行的已用数：今日的实时下限由它推出来
+function usedCredits(windows) {
+  const list = Array.isArray(windows) ? windows : []
+  const named = list.find((w) => w && w.name === "Credits" && Number.isFinite(w.amount))
+  if (named) return named.amount
+  const any = list.find((w) => w && !w.aside && Number.isFinite(w.amount))
+  return any ? any.amount : undefined
 }
 
 const IMPORT_HINT =
@@ -379,8 +392,19 @@ function withImport(factory, oldId) {
         const out = await baseUsage(getAuth)
         if (!out || out.error || out.signIn === "expired") return out
         try {
-          const a = await authFor(site0, input?.client, await getAuth())
-          out.windows = [...(out.windows ?? []), ...(await dayWindows(site0, a, { fetchImpl: input?.fetchImpl }))]
+          const stored = await getAuth()
+          const a = await authFor(site0, input?.client, stored)
+          // 条上那个一周期已用是今日实时下限的来源：流水 5 分钟才封一桶，这中间
+          // 的几分钟靠它顶着，免得刚用完积分时条在动、「今日」不动
+          out.windows = [
+            ...(out.windows ?? []),
+            ...(await dayWindows(site0, a, {
+              fetchImpl: input?.fetchImpl,
+              amount: usedCredits(out.windows),
+              directory: input?.directory,
+              uid: stored?.uid,
+            })),
+          ]
         } catch {}
         return out
       }

@@ -202,6 +202,10 @@ test("签到：活动进行中且未签 → 领取", async () => {
   assert.equal(fetch.calls[1].url, "https://copilot.tencent.com/v2/billing/meter/daily-checkin")
   assert.equal(fetch.calls[1].init.headers.authorization, "Bearer at")
   assert.equal(fetch.calls[1].init.headers["x-user-id"], "u")
+  // 真领到了才说这个答案到下一个北京零点为止
+  const until = Date.parse(out.until)
+  assert.ok(until > Date.now() && until - Date.now() <= 24 * 3600_000)
+  assert.equal(new Date(until + 8 * 3600_000).toISOString().slice(11, 19), "00:00:00")
 })
 
 test("签到：今天已签 / 活动未开始 / 已结束", async () => {
@@ -240,10 +244,9 @@ test("签到：认 snake_case 的真实返回，且已签就不再调 claim", as
   assert.equal(out.credit, 100)
   assert.equal(out.streak, 30)
   assert.equal(fetch.calls.length, 1, "已签的账号不该再去调 claim")
-  // until：WorkBuddy 的签到按北京日重置，这个答案到下一个北京零点为止
-  const until = Date.parse(out.until)
-  assert.ok(until > Date.now() && until - Date.now() <= 24 * 3600_000)
-  assert.equal(new Date(until + 8 * 3600_000).toISOString().slice(11, 19), "00:00:00")
+  // 没真领到就不给 until：magpie 只有在 until 为空时才会把「已签到」当成可能是
+  // 昨天的，每 30 分钟再问一次，过了中午那句话才会消失
+  assert.equal(out.until, undefined)
 })
 
 test("签到：claim 被「今天已签到」顶回来（10001）算已签，不是一天的失败", async () => {
