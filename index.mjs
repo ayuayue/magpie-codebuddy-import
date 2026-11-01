@@ -24,6 +24,7 @@ import {
   renameProviderKeys,
   variantOf,
 } from "./lib/accounts.mjs"
+import { makeActive } from "./lib/active.mjs"
 import { TRAVEL_OPTION, startTravelLoop } from "./lib/travel.mjs"
 import { beijingDay, dayWindows, meterAsked } from "./lib/usage.mjs"
 
@@ -375,10 +376,27 @@ function withImport(factory, oldId) {
       })
     }
 
-    // 上游没有签到钩子：补上，magpie 每天替每个账号签一次
+    // 上游没有签到钩子：补上，magpie 每天替每个账号签一次。
+    //
+    // 国内版（CodeBuddy）有签到活动；国际版（CodeBuddy AI）没有 ——
+    // checkin-activity-status 对国际版账号一律回 active:false，按原样只会天天
+    // 在卡片上写「当前没有签到活动」。国际版的每日奖励是「今天在网页端跑过一轮
+    // agent 会话」，所以那边接的是「每日活跃」：跑完一轮回 claimed，今天已经跑
+    // 过回 done。
     if (!hooks.auth.checkin) {
-      const checkin = makeCheckin(site0, input?.client, newId, input?.fetchImpl)
-      hooks.auth.checkin = checkin.checkin
+      const active = newId === "codebuddy-ai"
+        ? makeActive({
+            fetchImpl: input?.fetchImpl,
+            directory: input?.directory,
+            resolve: (stored) => authFor(site0, input?.client, stored),
+          })
+        : null
+      if (active) {
+        hooks.auth.checkin = active.run
+      } else {
+        const checkin = makeCheckin(site0, input?.client, newId, input?.fetchImpl)
+        hooks.auth.checkin = checkin.checkin
+      }
     }
 
     // 上游报的一周期已用是几十个滚动 30 天包的加总，包一过期就倒退，而 magpie
