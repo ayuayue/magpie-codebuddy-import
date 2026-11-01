@@ -83,6 +83,16 @@ function nextBeijingDay(at = Date.now()) {
   return new Date(Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate() + 1) - 8 * 3600_000).toISOString()
 }
 
+// authFor 是这个账号该带哪份 token。桌面端登录（source: "desktop"）故意不复制
+// token，只在 WorkBuddy 桌面端自己的文件里，得现读 —— current() 就是干这个的，
+// 用量、聊天走的也是它。fresh() 对这类账号原样返回（expires 为 0 不算过期、
+// access 为空），发出去就是空的 `Bearer `，签到和额度探针都 401，再被误报成
+// 「请重新登录」。桌面端把 token 加密了（WorkBuddy 5.6+）时 current() 给的也是
+// 明确的「读不到，用浏览器登录」，比 401 那句准。
+function authFor(site, client, a) {
+  return a?.source === "desktop" ? _internal.current(site, client, a) : _internal.fresh(site, client, a)
+}
+
 function makeCheckin(vendor, client, newId, fetchImpl) {
   const doFetch = fetchImpl ?? globalThis.fetch
   const origin = new URL(vendor.endpoint).origin
@@ -125,8 +135,8 @@ function makeCheckin(vendor, client, newId, fetchImpl) {
       if (stored?.type !== "oauth" || !(stored.access || stored.source)) {
         throw new Error("这个账号没有可用的登录，先登录再签到")
       }
-      // token 快过期时先续期（续期结果由 magpie 存回）
-      const auth = await _internal.fresh(vendor, client, stored)
+      // token 快过期时先续期（续期结果由 magpie 存回）；桌面端登录现读桌面端文件
+      const auth = await authFor(vendor, client, stored)
       const until = nextBeijingDay()
       let status
       try {
@@ -369,7 +379,7 @@ function withImport(factory, oldId) {
         const out = await baseUsage(getAuth)
         if (!out || out.error || out.signIn === "expired") return out
         try {
-          const a = await _internal.fresh(site0, input?.client, await getAuth())
+          const a = await authFor(site0, input?.client, await getAuth())
           out.windows = [...(out.windows ?? []), ...(await dayWindows(site0, a, { fetchImpl: input?.fetchImpl }))]
         } catch {}
         return out

@@ -277,7 +277,7 @@ magpie plugin rm magpie-codebuddy-import && magpie plugin add magpie-codebuddy-i
 ## 开发
 
 ```sh
-node --test test/import.test.mjs test/usage.test.mjs test/export.test.mjs test/travel.test.mjs    # 34 个用例
+node --test test/import.test.mjs test/usage.test.mjs test/export.test.mjs test/travel.test.mjs    # 36 个用例
 ```
 
 - `index.mjs` 插件入口：id 改名、开关、签到、用量补按日真数、旅行循环的挂载
