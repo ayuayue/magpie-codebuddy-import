@@ -16,7 +16,7 @@ const AUTH = { type: "oauth", access: "at", refresh: "rt", expires: 190000000000
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 
 // record 把整轮网页对话串起来，同时把发出去的请求记下来给断言用
-function world({ status = "completed", listToday = false, createStatus = 200, createBody = null } = {}) {
+function world({ status = "completed", listToday = false, listAt = "", createStatus = 200, createBody = null } = {}) {
   const calls = []
   let polls = 0
   const fetchImpl = async (url, init = {}) => {
@@ -36,7 +36,8 @@ function world({ status = "completed", listToday = false, createStatus = 200, cr
     }
     // 会话列表
     if (u.includes("/console/as/conversations/?") && method === "GET") {
-      return json({ code: 0, data: { conversations: listToday ? [{ id: "old", name: "Hi", status: "completed", createdAt: beijingDay(0) + "T09:00:00+08:00" }] : [] } })
+      const at = listAt || beijingDay(0) + "T09:00:00+08:00"
+      return json({ code: 0, data: { conversations: listToday ? [{ id: "old", name: "Hi", status: "completed", createdAt: at }] : [] } })
     }
     // 单条会话状态
     if (u.includes("/console/as/conversations/") && method === "GET") {
@@ -142,5 +143,54 @@ test("桌面端登录由 resolve 现取 token", async () => {
     const active = makeActive({ fetchImpl: w.fetchImpl, directory, resolve: async () => AUTH, pollEvery: 1 })
     const out = await active.run(async () => ({ type: "oauth", source: "desktop", access: "", expires: 0 }))
     assert.equal(out.outcome, "claimed")
+  })
+})
+
+test("会话状态大写也认得出完成", async () => {
+  await withDir(async (directory) => {
+    const w = world({ status: "COMPLETED" })
+    const out = await makeActive({ fetchImpl: w.fetchImpl, directory, pollEvery: 1 }).run(async () => AUTH)
+    assert.equal(out.outcome, "claimed")
+    // 认出来就只 stop，不能当失败 stop + delete
+    const acts = w.calls.filter((c) => /\/(stop|delete)$/.test(c.url)).map((c) => c.url.split("/").pop())
+    assert.deepEqual(acts, ["stop"])
+  })
+})
+
+test("会话列表里带 UTC 的时间也按北京日算", async () => {
+  await withDir(async (directory) => {
+    // 北京时间今天 01:30 = UTC 昨天 17:30。按字符串前 10 位会认成昨天，白跑一轮
+    const utc = new Date(Date.parse(beijingDay(0) + "T01:30:00+08:00")).toISOString()
+    assert.notEqual(utc.slice(0, 10), beijingDay(0), "这个时刻的 UTC 日期应该和北京日不同")
+    const w = world({ listToday: true, listAt: utc })
+    const out = await makeActive({ fetchImpl: w.fetchImpl, directory, pollEvery: 1 }).run(async () => AUTH)
+    assert.equal(out.outcome, "done")
+    assert.equal(w.calls.filter((c) => c.method === "POST" && /conversations\/$/.test(c.url)).length, 0)
+  })
+})
+
+test("claimed 给出下一个北京零点，省掉当天反复追问", async () => {
+  await withDir(async (directory) => {
+    const w = world()
+    const before = Date.now()
+    const out = await makeActive({ fetchImpl: w.fetchImpl, directory, pollEvery: 1 }).run(async () => AUTH)
+    assert.equal(out.outcome, "claimed")
+    const until = Number(out.until)
+    assert.ok(Number.isFinite(until), "until 要是一个能读的时间")
+    assert.ok(until > before, "until 应该是将来的时刻")
+    // 正好落在北京零点上，且不超过 24 小时
+    const t = new Date(until)
+    assert.equal(t.toISOString().slice(11, 13), "16", "北京零点 = UTC 16:00")
+    assert.ok(until - before <= 24 * 3600_000 && until - before > 0)
+  })
+})
+
+test("already done 不给 until：那只是本地说今天做过了", async () => {
+  await withDir(async (directory) => {
+    writeFileSync(join(directory, "workbuddy-active-state.json"), JSON.stringify({ u1: beijingDay(0) }))
+    const w = world()
+    const out = await makeActive({ fetchImpl: w.fetchImpl, directory, pollEvery: 1 }).run(async () => AUTH)
+    assert.equal(out.outcome, "done")
+    assert.equal(out.until, undefined)
   })
 })
