@@ -191,8 +191,34 @@ WorkBuddy 那边还没翻页（它 00:00 就回「已签到」，但那可能是
 提示也就跟着消失。
 
 部分账号 WorkBuddy 只认自家 App 发起的签到（缺设备令牌），这种情况会提示
-「请在 WorkBuddy App 里签到」，不会无限重试；国际版没有签到活动时报「当前没有签到
-活动」。
+「请在 WorkBuddy App 里签到」，不会无限重试。
+
+### 国际版（CodeBuddy AI）走的是「每日活跃」，不是签到
+
+国际版**没有签到活动**：`POST /v2/billing/meter/checkin-activity-status` 对每个国际版
+账号一律回 `active: false`（2026-11-01 实测 5 个账号全一样），所以按签到那套只会天天在
+卡片上写「当前没有签到活动」，按「立即签到」也不会有任何收益。
+
+它的每日奖励来自另一件事：**今天在 www.workbuddy.ai 的网页端真的跑过一轮 agent 会话**。
+所以国际版账号的签到钩子接的是这件事，一次调用 = 一轮网页对话：
+
+1. `POST /console/as/conversations/` 建会话（提示词 `Hi`、模型 `deepseek-v4.1-flash`）；
+2. 打开会话沙箱的 SSE 通道拿 `Acp-Connection-Id`，依次发
+   `initialize` / `session/load` / `session/set_model` / `session/prompt`；
+3. 轮询会话状态到 `completed`——只建会话不接沙箱的话会话会一直停在 `CREATING`，
+   不算一轮活跃；
+4. 收尾 `stop`（失败则 `stop` + `delete`）。上游对单账号同时存在的活跃会话有 10 条
+   硬上限，只建不收尾的话攒满就再也建不出来（429 / code 10105）；撞上时会先停掉最旧的
+   几条**本插件建的**会话（名字就是那句提示词），用户自己的对话不碰。
+
+结果：跑完一轮回 `claimed`（卡片上是「今日已签到 · 连续 N 天」），今天已经跑过回
+`done`，跑不完回 `failed`。今天有没有跑过，先看 `workbuddy-active-state.json`（按账号记
+北京日），再看会话列表里今天有没有名字是 `Hi` 的会话——两边任一为真就不再发请求，多跑
+一轮不会多给积分，只是白烧额度。
+
+不跑桌面端那条轻量 `chat/completions`：实测 2026-11-01 用桌面头打那个接口回
+`400 code 11128「failed channel verification」`，过它要复刻整套客户端指纹，代价远大于
+收益，而真正计入积分的本来就是网页会话那条。
 
 ## 五、派猫猫旅行
 
