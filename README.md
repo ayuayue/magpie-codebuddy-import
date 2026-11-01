@@ -315,29 +315,27 @@ magpie plugin rm magpie-codebuddy-import && magpie plugin add magpie-codebuddy-i
 `magpie plugin update` 是**整目录替换**：它把 `node_modules/magpie-codebuddy-import/`
 整个换掉。所以升级完别只看版本号，得确认装进去的那份真的在做事。
 
-先把路径换成 Windows 形式（Git Bash 的 `/c/Users/…` node 认不了）：
+三条静态检查（Git Bash 的 `/c/Users/…` node 读不了，先用 `pwd -W` 换成 Windows 形式）：
 
 ```sh
 CFG="$(cd "$HOME/.config/magpie" && pwd -W)"
 PLUG="$CFG/plugins/node_modules/magpie-codebuddy-import"
 
-node -p "require('$PLUG/package.json').version"   # 0.1.7 以上才有国际版活跃
-grep -c makeActive "$PLUG/index.mjs"              # 应该是 2：import 一次、调用一次
-ls "$PLUG/lib/active.mjs"                         # 文件在不在
+node -p "require('$PLUG/package.json').version"   # 要 >= 0.1.7
+grep -c makeActive "$PLUG/index.mjs"              # 要等于 2：import 一次、调用一次
+ls "$PLUG/lib/active.mjs"                         # 要能列出这个文件
 ```
 
-三条都对得上才算装好了。`grep` 是 0 说明升级装回了 0.1.6 以前的版本（国际版会退回
-「当前没有签到活动」），`ls` 找不到文件说明发布包的 `files` 漏了 `lib`。
+三条都对得上才算装好了。`grep` 是 0 说明装回了 0.1.6 或更早（国际版会退回
+「当前没有签到活动」），`ls` 找不到说明发布包的 `files` 漏了 `lib`。
 
-**光换文件不够，还得让它真的做一次事。** 国际版是「今天跑过就不跑」，本机当天验过
-的话必须先把当天的记号清掉，否则第二次只会回 `done`，看不出是不是真在跑：
+静态检查证明不了跑得通，还得让它真的做一次事。国际版是「今天跑过就不跑」，本机当天
+验过的话第二次只会回 `done`，看不出是不是真在跑——先清掉当天的记号：
 
 ```sh
-# 备份两份状态
 cp "$CFG/plugin-checkin.json" "$CFG/plugin-checkin.json.bak"
 cp "$CFG/workbuddy-active-state.json" "$CFG/workbuddy-active-state.json.bak" 2>/dev/null
 
-# 清掉国际版的签到结果和活跃记号
 node -e 'const f=process.argv[1],fs=require("fs"),d=JSON.parse(fs.readFileSync(f,"utf8"));for(const k of Object.keys(d))if(k.includes("codebuddy-ai"))delete d[k];fs.writeFileSync(f,JSON.stringify(d,null,2))' "$CFG/plugin-checkin.json"
 echo '{}' > "$CFG/workbuddy-active-state.json"
 
@@ -347,22 +345,30 @@ magpie accounts checkin
 对这三样：
 
 1. 每个国际版账号一行 `checked in today · a N-day streak`，不是「当前没有签到活动」；
-2. `plugin-checkin.json` 里 `codebuddy-ai|…` 那几条是 `"outcome":"claimed"`，时间戳是刚才；
+2. `plugin-checkin.json` 里 `codebuddy-ai|…` 那几条 `outcome` 是 `claimed`、时间戳是刚才；
 3. `workbuddy-active-state.json` 里每个账号的 uid 都写回了当天的北京日。
 
 再跑一次 `magpie accounts checkin`，这次应该是 `done` / already——说明去重生效，不会
 每次运行都白建一轮会话。国内版那几行照旧 `+100 · a N-day streak`，不受影响。
 
-出问题就把升级前的备份放回去，然后重启 magpie：
+出问题就把升级前的备份放回去再重启 magpie：
 
 ```sh
 cp -a "$CFG/backups/magpie-codebuddy-import-<时间戳>/." "$PLUG"/
 ```
 
-想升级前先自己验一遍发布包（不必等发版）：`npm pack --pack-destination /tmp`，
-`tar -tzf /tmp/magpie-codebuddy-import-*.tgz | sort` 看新增的 `lib/*.mjs` 在不在包里，
-再按上面同样的方式解包覆盖到 `$PLUG` 跑一遍。`package.json` 的 `files` 已经整目录列了
-`lib`、`vendor`、`scripts`，往这几个目录里加文件不用改它；落在别处就要自己确认。
+### 发版前先验一遍发布包
+
+不必等发版，也不用动本机装好的那份：
+
+```sh
+cd <仓库> && npm pack --pack-destination /tmp
+tar -tzf /tmp/magpie-codebuddy-import-*.tgz | sort   # 看新加的 lib/*.mjs 在不在包里
+```
+
+`package.json` 的 `files` 已经整目录列了 `lib`、`vendor`、`scripts`，往这三个目录里
+加文件不用改它；落到别处就得自己加。要真装上去试，就解包覆盖到 `$PLUG`（先备份整
+目录），这一步模拟的正是 `magpie plugin update` 的整目录替换。
 
 ## 和市场里的 workbuddy 插件共存
 
