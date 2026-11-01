@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { after, test } from "node:test"
@@ -282,6 +282,76 @@ test("签到：401 且额度也读不动 → 登录失效", async () => {
     new Response("", { status: 401 }),
   ]))
   await assert.rejects(() => auth.checkin(async () => AUTH), /重新登录/)
+})
+
+// desktopHome 建一个假的 HOME，并在里面写一份 WorkBuddy 桌面端的登录文件 ——
+// 桌面端登录（source: "desktop"）的 token 只在那个文件里。
+function desktopHome(name, env) {
+  const home = mkdtempSync(join(tmpdir(), "wb-desktop-"))
+  const base =
+    process.platform === "darwin" ? join(home, "Library", "Application Support", "CodeBuddyExtension")
+    : process.platform === "win32" ? join(home, "AppData", "Local", "CodeBuddyExtension")
+    : join(home, ".local", "share", "CodeBuddyExtension")
+  const dir = join(base, "Data", "Public", "auth")
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, name + ".info"), JSON.stringify(env))
+  return home
+}
+
+async function withHome(home, fn) {
+  const kept = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
+  process.env.HOME = home
+  process.env.USERPROFILE = home
+  try {
+    return await fn()
+  } finally {
+    for (const [k, v] of Object.entries(kept)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+// 回归（#1）：桌面端登录故意不往 magpie 存 token（access/refresh 为空、expires 0），
+// fresh() 对它是原样返回，签到就带着空的 `Bearer ` 发出去 → 401 → 卡片说「请重新登录」，
+// 而账号其实好好的。签到得和用量、聊天一样走 current()。
+const DESKTOP_AUTH = { type: "oauth", access: "", refresh: "", expires: 0, source: "desktop", uid: "u-desk", accountId: "桌面号" }
+
+test("签到：桌面端登录的账号带桌面端的 token，不是空的 Bearer", async () => {
+  const home = desktopHome("workbuddy-desktop", {
+    auth: { accessToken: "desk-at", refreshToken: "" },
+    account: { uid: "u-desk", nickname: "桌面号" },
+  })
+  await withHome(home, async () => {
+    const fetch = stubFetch([
+      json({ code: 0, data: { active: true, today_checked_in: true, today_credit: 100, streak_days: 32 } }),
+    ])
+    const auth = await checkinHook(fetch)
+    const out = await auth.checkin(async () => DESKTOP_AUTH)
+    assert.equal(fetch.calls[0].init.headers.authorization, "Bearer desk-at")
+    assert.equal(fetch.calls[0].init.headers["x-user-id"], "u-desk")
+    assert.equal(out.outcome, "done")
+    assert.equal(out.streak, 32)
+  })
+})
+
+// 桌面端把 token 加密了（WorkBuddy 5.6+）时读不到就是读不到：current() 给的是这句
+// 明确的文案，而不是一个空 token 换来的 401「请重新登录」。
+test("签到：桌面端 token 加密 → 说读不到、让用浏览器登录", async () => {
+  const home = desktopHome("workbuddy-desktop", {
+    auth: { accessToken: { $wbEncrypted: 1 }, refreshToken: { $wbEncrypted: 1 } },
+    account: { uid: "u-sealed", nickname: "加密号" },
+  })
+  await withHome(home, async () => {
+    const fetch = stubFetch([])
+    const auth = await checkinHook(fetch)
+    await assert.rejects(
+      () => auth.checkin(async () => ({ ...DESKTOP_AUTH, uid: "u-sealed" })),
+      /encrypted[\s\S]*browser/,
+    )
+    assert.equal(fetch.calls.length, 0, "读不到 token 就不该发请求")
+  })
 })
 
 // ---- 派猫猫旅行 ----
